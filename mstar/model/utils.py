@@ -1,6 +1,7 @@
 
 import json
 import logging
+import math
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -364,3 +365,28 @@ class ByteLevelDetokenizer:
         for token in tokens:
             raw.extend(self.byte_decoder[c] for c in token)
         return bytes(raw)
+
+
+# the request kwargs the sampler and the conductor read as numbers
+SAMPLING_NUMBERS = {
+    "temperature": float, "top_p": float, "top_k": int, "min_p": float,
+    "repetition_penalty": float, "max_output_tokens": int, "seed": int,
+}
+
+
+def sampling_kwargs(model_kwargs: dict | None) -> dict:
+    """``model_kwargs`` with None read as unset and each sampling knob a number;
+    any other value for one raises ValueError."""
+    kwargs = {k: v for k, v in (model_kwargs or {}).items() if v is not None}
+    for key, kind in SAMPLING_NUMBERS.items():
+        value = kwargs.get(key)
+        if value is None or (kind is int and isinstance(value, int) and not isinstance(value, bool)):
+            continue
+        try:
+            number = float(value)
+        except (TypeError, ValueError, OverflowError):
+            raise ValueError(f"{key} must be a number; got {value!r}") from None
+        if not math.isfinite(number) or (kind is int and not number.is_integer()):
+            raise ValueError(f"{key} must be a finite {kind.__name__}; got {value!r}")
+        kwargs[key] = kind(number)
+    return kwargs
