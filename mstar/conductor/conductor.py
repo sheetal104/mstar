@@ -209,6 +209,8 @@ class RequestData:
     # resource label -> the config this request's resources were opened with
     resource_configs: dict[str, ResourceReqConfig]
     sharding_config: ShardingConfig | None = None
+    # a NewRequest has gone out: a failure from here on drains every worker
+    dispatched: bool = False
 
     # Partition state (always populated — single-partition models use a "default" partition)
     partition_states: dict[str, PartitionState] = field(default_factory=dict)
@@ -863,6 +865,40 @@ class Conductor:
     def _do_ingest_request(
         self, body: NewRequestConductor
     ):
+        """Dispatch a request to workers (no admission check). A request whose
+        ingest raises fails alone; the loop's other messages still run."""
+        try:
+            self._dispatch_request(body)
+        except Exception as exc:  # noqa: BLE001 - a model hook can raise on one request's kwargs
+            self._fail_ingest(body.request_id, exc)
+
+    def _fail_ingest(self, request_id: str, exc: Exception):
+        """Drained like a worker failure once a NewRequest has gone out;
+        before that only the preprocess worker holds the request."""
+        logger.exception("Ingest failed for request %s", request_id)
+        error = f"ingest failed: {type(exc).__name__}: {exc}"
+        request_data = self.requests.get(request_id)
+        if request_data is not None and request_data.dispatched:
+            self._remove_request(request_id, request_data, failure_error=error)
+            return
+        self.requests.pop(request_id, None)
+        self._send_remove_to_preprocess_worker(request_id)
+        self.communicator.send(
+            "api_server",
+            APIServerMessage(
+                message_type="request_failed",
+                body=RequestFailed(
+                    request_id=request_id,
+                    error_message=error,
+                    # the data worker's rule: a bad value in the request is the client's
+                    status=400 if isinstance(exc, (ValueError, TypeError)) else 500,
+                ),
+            ),
+        )
+
+    def _dispatch_request(
+        self, body: NewRequestConductor
+    ):
         """Actually dispatch a request to workers (no admission check)."""
         logger.debug("Conductor ingesting request %s", body.request_id)
         ingest_time = time.perf_counter()
@@ -1009,6 +1045,7 @@ class Conductor:
                         body=message,
                     ),
                 )
+                request_data.dispatched = True
 
     def _resolve_worker_partition(
         self, worker_graph_ids: list[int],

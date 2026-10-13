@@ -66,6 +66,7 @@ test/modular/test_fused_moe_fp8_config.py
 test/modular/test_fused_moe_fp8_op.py
 test/modular/test_fused_moe_prefill.py
 test/modular/test_conductor_moe_prebuild.py
+test/modular/test_conductor_ingest_failure.py
 test/modular/test_mla_kv_layout.py
 test/modular/test_quant_fp8.py
 test/modular/test_step_token_budget.py
